@@ -1,0 +1,25 @@
+# Beispiel-Inventory für das Cron-Dokumentations-Playbook
+# Kopiere diese Datei nach hosts.ini und passe sie an.
+#
+# Verwendung:
+#   cp inventory/hosts.ini.example inventory/hosts.ini
+#   ansible-playbook -i inventory/hosts.ini playbooks/cron_docs.yml
+
+[webserver]
+web01.example.com ansible_user=ansible
+web02.example.com ansible_user=ansible
+
+[datenbankserver]
+db01.example.com ansible_user=ansible ansible_port=22
+
+[alle_server:children]
+webserver
+datenbankserver
+
+[alle_server:vars]
+# SSH-Key (optional, falls nicht im SSH-Agent)
+# ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+# Sudo ohne Passwort (empfohlen für das Playbook, da become: true)
+ansible_become=true
+ansible_become_method=sudo

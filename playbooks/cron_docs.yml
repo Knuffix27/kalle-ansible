@@ -1,0 +1,149 @@
+---
+# Ansible Playbook: cron_docs.yml
+#
+# Verbindet sich zu allen Hosts im Inventory, liest alle Cronjobs aus
+# und generiert pro Server eine Markdown-Dokumentationsdatei.
+#
+# Verwendung:
+#   ansible-playbook -i inventory/hosts.ini playbooks/cron_docs.yml
+#
+# Optionale Variablen (via -e):
+#   docs_output_dir  - Ausgabeverzeichnis für Markdown-Dateien (Standard: ../docs)
+#   temp_json_dir    - Temp-Verzeichnis für JSON-Zwischendateien (Standard: /tmp/ansible_cron_docs)
+
+- name: Cronjobs auslesen und dokumentieren
+  hosts: all
+  gather_facts: false
+  become: true
+
+  vars:
+    docs_output_dir: "{{ playbook_dir }}/../docs"
+    script_path: "{{ playbook_dir }}/../scripts/generate_cron_docs.py"
+    temp_json_dir: "/tmp/ansible_cron_docs"
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # Daten sammeln (remote)
+    # -------------------------------------------------------------------------
+
+    - name: Root-Crontab auslesen
+      ansible.builtin.shell: crontab -l 2>/dev/null || true
+      changed_when: false
+      register: root_crontab
+
+    - name: Benutzer-Crontabs auslesen (alle Systembenutzer)
+      ansible.builtin.shell: |
+        set +e
+        getent passwd | awk -F: '{print $1}' | while read user; do
+          cron=$(crontab -u "$user" -l 2>/dev/null)
+          if [ -n "$cron" ]; then
+            printf 'USER:%s\n%s\nEND_USER\n' "$user" "$cron"
+          fi
+        done
+        exit 0
+      changed_when: false
+      register: user_crontabs
+
+    - name: /etc/crontab auslesen
+      ansible.builtin.shell: cat /etc/crontab 2>/dev/null || true
+      changed_when: false
+      register: etc_crontab
+
+    - name: Dateien in /etc/cron.d/ finden
+      ansible.builtin.find:
+        paths: /etc/cron.d
+        file_type: file
+      register: cron_d_found
+
+    - name: Inhalte der /etc/cron.d/ Dateien auslesen
+      ansible.builtin.slurp:
+        path: "{{ item.path }}"
+      loop: "{{ cron_d_found.files }}"
+      register: cron_d_raw
+      when: cron_d_found.files | length > 0
+
+    - name: cron.d Dateiliste initialisieren
+      ansible.builtin.set_fact:
+        cron_d_files: []
+
+    - name: cron.d Dateiliste aufbauen
+      ansible.builtin.set_fact:
+        cron_d_files: >-
+          {{ cron_d_files + [{'filename': item.item.path, 'content': item.content | b64decode}] }}
+      loop: "{{ cron_d_raw.results | default([]) }}"
+      when:
+        - cron_d_raw is not skipped
+        - cron_d_raw.results is defined
+
+    - name: Skript-Listen der Cron-Verzeichnisse auslesen
+      ansible.builtin.shell: ls {{ item }} 2>/dev/null | grep -v '^$' || true
+      loop:
+        - /etc/cron.hourly
+        - /etc/cron.daily
+        - /etc/cron.weekly
+        - /etc/cron.monthly
+      changed_when: false
+      register: cron_dirs
+
+    # -------------------------------------------------------------------------
+    # Datenstruktur aufbauen und lokal speichern
+    # -------------------------------------------------------------------------
+
+    - name: Gesammelte Cron-Daten in einer Struktur zusammenführen
+      ansible.builtin.set_fact:
+        cron_data:
+          hostname: "{{ inventory_hostname }}"
+          root_crontab: "{{ root_crontab.stdout }}"
+          etc_crontab: "{{ etc_crontab.stdout }}"
+          user_crontabs_raw: "{{ user_crontabs.stdout }}"
+          cron_d_files: "{{ cron_d_files }}"
+          cron_hourly: "{{ cron_dirs.results[0].stdout_lines | select('match', '.+') | list }}"
+          cron_daily: "{{ cron_dirs.results[1].stdout_lines | select('match', '.+') | list }}"
+          cron_weekly: "{{ cron_dirs.results[2].stdout_lines | select('match', '.+') | list }}"
+          cron_monthly: "{{ cron_dirs.results[3].stdout_lines | select('match', '.+') | list }}"
+
+    - name: Lokales Temp-Verzeichnis anlegen
+      ansible.builtin.file:
+        path: "{{ temp_json_dir }}"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Lokales Ausgabeverzeichnis anlegen
+      ansible.builtin.file:
+        path: "{{ docs_output_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Cron-Daten als JSON lokal zwischenspeichern
+      ansible.builtin.copy:
+        content: "{{ cron_data | to_nice_json }}"
+        dest: "{{ temp_json_dir }}/{{ inventory_hostname }}.json"
+        mode: '0600'
+      delegate_to: localhost
+
+    # -------------------------------------------------------------------------
+    # Python-Skript lokal ausführen → Markdown generieren
+    # -------------------------------------------------------------------------
+
+    - name: Markdown-Dokumentation generieren
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ script_path }}"
+          - --input
+          - "{{ temp_json_dir }}/{{ inventory_hostname }}.json"
+          - --output-dir
+          - "{{ docs_output_dir }}"
+      delegate_to: localhost
+      changed_when: true
+
+    - name: JSON-Temp-Datei aufräumen
+      ansible.builtin.file:
+        path: "{{ temp_json_dir }}/{{ inventory_hostname }}.json"
+        state: absent
+      delegate_to: localhost
