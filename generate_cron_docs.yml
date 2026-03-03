@@ -1,0 +1,54 @@
+---
+- name: Document Cron Jobs on All Servers
+  hosts: all
+  gather_facts: yes
+  vars:
+    script_path: "{{ playbook_dir }}"
+    docs_path: "{{ playbook_dir }}/docs"
+
+  tasks:
+    - name: Include cron collection tasks
+      include_tasks: collect_crons.yml
+
+    - name: Ensure Python script is copied to localhost
+      copy:
+        src: "{{ script_path }}/process_crons.py"
+        dest: "/tmp/process_crons.py"
+        mode: "0755"
+      delegate_to: localhost
+      run_once: yes
+
+    - name: Create output directory
+      file:
+        path: "{{ docs_path }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: yes
+
+    - name: Process cron data and generate markdown
+      shell: |
+        python3 << 'EOF'
+        import json
+        import sys
+        sys.path.insert(0, '{{ script_path }}')
+        from process_crons import CronMarkdownProcessor
+
+        cron_data = {
+            "hostname": "{{ inventory_hostname }}",
+            "user_crontab": """{{ cron_data.user_crontab | regex_replace('(?<!\\\\)"', '\\"') }}""",
+            "system_crontab": """{{ cron_data.system_crontab | regex_replace('(?<!\\\\)"', '\\"') }}""",
+            "cron_d_files": """{{ cron_data.cron_d_files | regex_replace('(?<!\\\\)"', '\\"') }}"""
+        }
+
+        output_file = "{{ docs_path }}/{{ inventory_hostname }}_crons.md"
+        processor = CronMarkdownProcessor(output_file)
+        processor.update_markdown(cron_data)
+        EOF
+      delegate_to: localhost
+      changed_when: true
+
+    - name: Display documentation summary
+      debug:
+        msg: "Cron documentation generated at {{ docs_path }}/{{ inventory_hostname }}_crons.md"
+      delegate_to: localhost

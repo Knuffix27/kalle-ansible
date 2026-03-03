@@ -1,0 +1,19 @@
+# Ansible
+*.retry
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Generated documentation
+docs/
+!docs/.gitkeep
+
+# Sensitive files
+*.key
+*.pem
+.env

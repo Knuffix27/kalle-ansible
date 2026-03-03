@@ -1,0 +1,49 @@
+---
+- name: Collect Cron Jobs
+  hosts: all
+  gather_facts: yes
+  tasks:
+    - name: Read crontab for current user
+      shell: crontab -l 2>/dev/null || echo "No crontab entries"
+      register: user_crontab
+      changed_when: false
+      failed_when: false
+
+    - name: Read system crontab
+      shell: cat /etc/crontab 2>/dev/null || echo "No system crontab"
+      register: system_crontab
+      become: yes
+      changed_when: false
+      failed_when: false
+
+    - name: List cron.d directory
+      find:
+        paths: /etc/cron.d
+        file_type: file
+      register: cron_d_files
+      become: yes
+      failed_when: false
+
+    - name: Read individual cron.d files
+      slurp:
+        src: "{{ item.path }}"
+      register: cron_d_content
+      loop: "{{ cron_d_files.files }}"
+      failed_when: false
+      become: yes
+
+    - name: Prepare cron data
+      set_fact:
+        cron_data:
+          hostname: "{{ inventory_hostname }}"
+          user_crontab: "{{ user_crontab.stdout }}"
+          system_crontab: "{{ system_crontab.stdout }}"
+          cron_d_files: |
+            {% for item in cron_d_content.results %}
+            === {{ item.item.path }} ===
+            {{ item.content | b64decode }}
+            {% endfor %}
+
+    - name: Display collected data
+      debug:
+        var: cron_data
